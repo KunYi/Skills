@@ -1,0 +1,3 @@
+- NEVER rewrite pushed commits
+- ALWAYS show preview
+- DO NOT execute destructive git commands

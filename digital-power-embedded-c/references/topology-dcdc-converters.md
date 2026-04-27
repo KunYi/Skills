@@ -1,0 +1,287 @@
+# Topology: DC-DC Converters (Reference)
+
+## Overview
+
+Buck, boost, and buck-boost converters are the fundamental DC-DC building blocks in digital power systems. Key control challenges include CCM/DCM boundary handling, output voltage regulation dynamics, synchronous rectification timing, and load transient response.
+
+## 1. Buck Converter
+
+### Voltage-Mode Control
+
+```c
+/**
+ * @brief  Buck converter voltage-mode control with single PI loop.
+ *         Suitable for low-power applications with slow load transients.
+ *
+ * @note   Duty = Vout / Vin in steady state (ideal).
+ *         PI compensates for losses, parasitic drops, and load changes.
+ */
+typedef struct {
+    pi_controller_t voltage_pi;
+    float32_t v_out;            /* Measured output voltage [V]     */
+    float32_t v_out_ref;        /* Output voltage reference [V]    */
+    float32_t v_in;             /* Input voltage (for feedforward) */
+    float32_t duty;             /* Duty cycle [0..Dmax]            */
+    float32_t duty_max;         /* Maximum duty limit              */
+    float32_t duty_min;         /* Minimum duty limit              */
+} buck_vmode_t;
+
+void buck_voltage_mode_update(buck_vmode_t *bk) {
+    bk->duty = pi_update(&bk->voltage_pi, bk->v_out_ref, bk->v_out);
+
+    /* Optional: input voltage feedforward for improved line rejection */
+    /* bk->duty += bk->v_out_ref / bk->v_in;  (add to PI output) */
+}
+```
+
+### Peak Current Mode Control (PCMC)
+
+```c
+/**
+ * @brief  Peak current mode control for buck converter.
+ *         Outer voltage loop generates peak current reference.
+ *         Inner current limit is implemented via hardware comparator.
+ *
+ * @note   Slope compensation is MANDATORY for duty > 50% to prevent
+ *         subharmonic oscillation. Compensation ramp = Se ≥ 0.5 × Sn
+ *         where Sn = (Vin - Vout) × Rsense / L (inductor down-slope).
+ */
+typedef struct {
+    pi_controller_t voltage_pi;
+    float32_t i_peak_ref;       /* Peak current reference from voltage loop */
+    float32_t slope_comp;       /* Slope compensation [A/cycle]            */
+    float32_t v_out;
+    float32_t v_out_ref;
+} buck_pcmc_t;
+
+void buck_pcmc_voltage_loop(buck_pcmc_t *bk) {
+    bk->i_peak_ref = pi_update(&bk->voltage_pi, bk->v_out_ref, bk->v_out);
+}
+
+/**
+ * @brief  Calculate slope compensation ramp value.
+ * @param  v_in    Input voltage [V]
+ * @param  v_out   Output voltage [V]
+ * @param  l_h     Inductance [H]
+ * @param  r_sense Current sense resistor [Ω]
+ * @param  f_sw    Switching frequency [Hz]
+ * @return Slope compensation per cycle [A]
+ */
+float32_t buck_slope_comp(float32_t v_in, float32_t v_out,
+                          float32_t l_h, float32_t r_sense,
+                          float32_t f_sw) {
+    float32_t sn = (v_in - v_out) * r_sense / l_h;  /* Down-slope     */
+    float32_t t_sw = 1.0f / f_sw;
+    return 0.5f * sn * t_sw;  /* Minimum compensation = 50% of Sn */
+}
+```
+
+### Average Current Mode Control
+
+```c
+/**
+ * @brief  Average current mode: dual-loop control.
+ *         Outer: voltage PI → current reference
+ *         Inner: current PI → duty cycle
+ *
+ * @note   More robust than PCMC, no slope compensation needed.
+ *         Requires current sensor with DC accuracy (shunt or hall).
+ *         Inner loop bandwidth: ~1/10 of switching frequency.
+ */
+typedef struct {
+    pi_controller_t voltage_pi;   /* Outer loop: 1-10 kHz   */
+    pi_controller_t current_pi;   /* Inner loop: fsw/10     */
+    float32_t v_out;
+    float32_t v_out_ref;
+    float32_t i_inductor;         /* Average inductor current */
+    float32_t i_ref;
+    float32_t duty;
+} buck_acmc_t;
+
+void buck_acmc_slow_loop(buck_acmc_t *bk) {
+    bk->i_ref = pi_update(&bk->voltage_pi, bk->v_out_ref, bk->v_out);
+}
+
+void buck_acmc_fast_loop(buck_acmc_t *bk) {
+    bk->duty = pi_update(&bk->current_pi, bk->i_ref, bk->i_inductor);
+}
+```
+
+## 2. Boost Converter
+
+### Key Differences from Buck
+- **Duty equation**: D = 1 - Vin/Vout (steady-state)
+- **Right-half-plane zero**: Limits control bandwidth — voltage loop must be slower
+- **Inductor current ≠ load current**: Input current equals inductor current, output is pulsating
+
+### RHP Zero Consideration
+
+```c
+/**
+ * @brief  Boost converter voltage loop bandwidth must be limited
+ *         due to right-half-plane zero (RHPZ).
+ *
+ *         f_rhpz = R_load × (1 - D)² / (2π × L)
+ *
+ *         Rule of thumb: voltage loop crossover < f_rhpz / 5
+ *         Aggressive tuning: crossover < f_rhpz / 3
+ *
+ * @param  r_load  Load resistance [Ω]
+ * @param  duty    Operating duty cycle
+ * @param  l_h     Inductance [H]
+ * @return RHPZ frequency [Hz]
+ */
+float32_t boost_calc_rhpz(float32_t r_load, float32_t duty,
+                          float32_t l_h) {
+    float32_t one_minus_d = 1.0f - duty;
+    return (r_load * one_minus_d * one_minus_d) / (6.2832f * l_h);
+}
+```
+
+## 3. Buck-Boost / Four-Switch Buck-Boost
+
+### Mode Transition
+
+```c
+/**
+ * @brief  Four-switch buck-boost seamless mode transition.
+ *         When Vin ≈ Vout, both buck and boost legs are active.
+ *
+ * @note   Hysteresis band prevents rapid mode switching:
+ *         - Pure buck:  Vin > Vout + margin
+ *         - Buck-boost: Vout - margin < Vin < Vout + margin
+ *         - Pure boost: Vin < Vout - margin
+ */
+typedef enum {
+    BBMODE_BUCK,
+    BBMODE_BUCK_BOOST,
+    BBMODE_BOOST
+} buckboost_mode_t;
+
+buckboost_mode_t buckboost_detect_mode(float32_t v_in, float32_t v_out,
+                                       float32_t hysteresis) {
+    if (v_in > (v_out + hysteresis)) {
+        return BBMODE_BUCK;
+    } else if (v_in < (v_out - hysteresis)) {
+        return BBMODE_BOOST;
+    } else {
+        return BBMODE_BUCK_BOOST;
+    }
+}
+```
+
+### Bidirectional Buck-Boost Notes
+
+- **Typical Use Cases**: Battery charge/discharge, DC bus stabilizer, energy storage interface, regenerative power flow
+- **Control Requirement**: Bidirectional current control usually dominates the design; voltage or power loop runs outside it
+- **Direction Handling**: Explicitly define positive current direction and keep the sign convention consistent across ADC scaling, PI limits, and protection thresholds
+- **Transition Risk**: Charging/discharging polarity changes can expose dead-time distortion, current offset bias, and integrator carry-over if restart logic is not explicit
+- **Frequency Range**: High-frequency designs may run `100–200 kHz` switching / fast current loop when magnetic size, ripple, or power-density targets justify it, but only with a very lean ISR path
+- **ISR Implication**: At these rates, precompute coefficients, avoid heavy branching, keep soft protection out of the hot path, and rely on hardware trip mechanisms for immediate fault response
+- **Sampling Implication**: ADC trigger placement, current-sense amplifier settling, and synchronous sampling become first-order design constraints rather than secondary tuning details
+
+## 4. CCM / DCM Boundary
+
+### Detection and Handling
+
+```c
+/**
+ * @brief  Detect CCM/DCM boundary from inductor current.
+ *         In DCM, inductor current reaches zero during off-time.
+ *
+ * @note   DCM detection methods:
+ *         1. Software: check if i_inductor < threshold near end of off-time
+ *         2. Hardware: use comparator on current sense to detect zero-crossing
+ *         3. Predictive: calculate ripple and compare to average current
+ *
+ *         In DCM, control plant transfer function changes:
+ *         - Additional pole appears
+ *         - Gain increases at light load
+ *         - May need different PI coefficients
+ */
+typedef struct {
+    bool is_dcm;
+    float32_t i_ripple_pp;      /* Peak-to-peak ripple current     */
+    float32_t i_boundary;       /* CCM/DCM boundary current        */
+} ccm_dcm_state_t;
+
+void ccm_dcm_detect(ccm_dcm_state_t *state, float32_t i_avg,
+                     float32_t v_in, float32_t v_out,
+                     float32_t l_h, float32_t f_sw) {
+    /* Calculate peak-to-peak ripple: ΔI = (Vin × D) / (L × fsw) */
+    float32_t duty = v_out / v_in;  /* Buck steady-state */
+    state->i_ripple_pp = (v_in * duty) / (l_h * f_sw);
+
+    /* Boundary current = half of ripple (average current where
+       valley just touches zero) */
+    state->i_boundary = state->i_ripple_pp * 0.5f;
+
+    /* DCM when average current drops below boundary */
+    state->is_dcm = (i_avg < state->i_boundary);
+}
+```
+
+## 5. Synchronous Rectification
+
+- **Dead-time Control**: Prevent shoot-through; typical 50–200 ns on STM32G4 HRTIM
+- **Body Diode Conduction**: Minimize by turning on synchronous FET as fast as possible after dead-time
+- **Light Load Efficiency**: Disable synchronous rectification in DCM to prevent negative current
+- **STM32G4 HRTIM**: Hardware dead-time insertion with programmable rising/falling edge delays
+
+```c
+/* HRTIM dead-time configuration example */
+void hrtim_deadtime_config(uint16_t rising_ns, uint16_t falling_ns) {
+    /* Convert requested dead-time to HRTIM ticks.
+       Verify the exact resolution and prescaler settings against the
+       selected STM32G4 part and HRTIM clock tree before use. */
+    uint16_t dt_rising  = (uint16_t)(rising_ns * 1000U / 184U);
+    uint16_t dt_falling = (uint16_t)(falling_ns * 1000U / 184U);
+
+    HRTIM1->sTimerxRegs[0].DTxR =
+        (dt_rising  << HRTIM_DTR_DTR_Pos) |
+        (dt_falling << HRTIM_DTR_DTF_Pos) |
+        HRTIM_DTR_DTPRSC_0;  /* Prescaler */
+}
+```
+
+## 6. Multi-Phase Interleaving
+
+- **Purpose**: Reduce input/output ripple, share thermal load, increase power capability
+- **Phase Shift**: 360°/N for N phases (e.g., 2-phase = 180° offset)
+- **Current Sharing**: Each phase needs independent current sensing; balance via per-phase PI trimming
+- **STM32G4**: Use multiple HRTIM timer units with master trigger for phase synchronization
+
+## 7. Protection Summary
+
+| Fault | Buck | Boost | Notes |
+|-------|------|-------|-------|
+| **Output OVP** | Monitor Vout | Monitor Vout | Boost: more critical due to energy storage |
+| **Input UVP** | Disable switching | Disable switching | Prevent excessive duty at low Vin |
+| **OCP** | Cycle-by-cycle (COMP) | Cycle-by-cycle (COMP) | Boost: input = inductor current |
+| **Reverse Current** | Disable sync FET | Disable sync FET | Especially at light load |
+| **Thermal** | NTC via ADC, 1ms check | NTC via ADC, 1ms check | Derate power above threshold |
+
+## 8. STM32G4 Implementation Notes
+
+- **HRTIM vs TIM1**: Use HRTIM for >100 kHz or when sub-ns dead-time precision is needed
+- **COMP + DAC**: Use internal comparators with DAC reference for programmable OCP threshold
+- **OPAMP**: Internal opamps for current sense signal conditioning
+- **ADC Trigger**: HRTIM ADC trigger units (ADC1R–ADC4R) for precise sampling point placement
+
+### High-Frequency Current Loop Optimizations (>50kHz - 100kHz+)
+
+When dealing with high-frequency DC-DC topologies (e.g., fast Bidirectional Buck-Boost or high-density Buck), the inner current loop ISR latency becomes the primary bottleneck. At 100kHz, the entire ISR budget is strictly < 10 µs. Apply the following strategies:
+
+- **Bypass CMSIS DSP in Hot-Paths**: Do not use `arm_clip_f32()` or standard library function calls in the current loop ISR, as the stack push/pop overhead defeats the FPU benefit.
+- **FPU Branchless Ternary Clamping**: 
+  Instead of standard `if-else` blocks or function calls, aggressively use ternary operators for saturation. GCC will compile this directly into single-cycle ARM FPU instructions (`VMAXNM.F32` and `VMINNM.F32`).
+  ```c
+  /* Compiles to 1-2 CPU cycles, zero branch prediction penalty */
+  duty = (duty > MAX_DUTY) ? MAX_DUTY : ((duty < MIN_DUTY) ? MIN_DUTY : duty);
+  ```
+- **Hardware Intrinsics for Fixed-Point**: 
+  If avoiding floating-point entirely for speed, use `__SSAT(value, bit_position)` for single-cycle hardware saturation.
+- **Zero-Wait State Memory (.ramfunc)**: 
+  Flash memory access latency (Wait States) ruins high-frequency ISR determinism. Move the entire current-loop controller into CCMRAM or SRAM by tagging the function with `__attribute__((section(".ramfunc")))`.
+- **Precompute Everything**: 
+  Division and floating-point parameters (like `Ki * Ts`) MUST be precalculated in the slow background loop. The fast ISR should only contain Fused Multiply-Accumulate (FMA) instructions (`VMLA.F32`).
