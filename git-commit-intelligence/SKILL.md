@@ -1,182 +1,159 @@
 ---
 name: git-commit-intelligence
-description: >
-Generate high-quality git commit messages with extremely low misclassification.
-Supports embedded, driver, desktop, and unknown domains via semantic inference,
-confidence gating, ASK mode, and repo-specific memory.
+description: Use when generating or reviewing git commit messages for unfamiliar repositories, ambiguous changes, or mixed codebases where type, scope, or domain can be misclassified.
 ---
 
-# Purpose
+# Git Commit Intelligence
+
+## Purpose
 
 Ensure commit messages are precise, consistent, and never misleading.
 
----
+## Execution Strategy (STRICT)
 
-# Execution Strategy (STRICT)
+You MUST follow every step in order.
 
-You MUST follow ALL steps in order.
-
----
-
-## Step 1 — Load Core Rules
+### Step 1 - Load Core Rules
 
 Read:
 
-* core/format.md
-* core/scoring.md
-* core/safety.md
+- `core/format.md`
+- `core/scoring.md`
+- `core/safety.md`
 
----
+### Step 2 - Infer Domain
 
-## Step 2 — Domain Inference (Context-Based)
-
-Determine domain using PRIORITY:
+Determine the domain using this priority:
 
 1. Repository context
 2. Code characteristics
-3. File structure (weak signal)
-4. Keywords (last resort)
+3. File structure as a weak signal
+4. Keywords as a last resort
 
----
+### Step 3 - Set Domain Confidence
 
-## Step 3 — Domain Confidence
+Estimate confidence on a `0.0-1.0` scale:
 
-Estimate confidence (0.0–1.0):
+- `>= 0.7` -> proceed
+- `0.4-0.7` -> proceed with assumptions
+- `< 0.4` -> ASK
 
-* ≥ 0.7 → proceed
-* 0.4–0.7 → proceed with assumptions
-* < 0.4 → ASK
+If there is no strong domain signal:
 
-If no strong domain:
+- Set `domain = other`
+- Reduce confidence by `0.2-0.3`
 
-→ set domain = other
-→ reduce confidence by 0.2–0.3
+### Step 4 - Load Domain Rules
 
----
+Load exactly one domain rule when matched:
 
-## Step 4 — Load Domain Rules
-
-Load ONE domain rule if matched:
-
-* embedded → domains/embedded.md
-* driver → domains/driver.md
-* desktop → domains/desktop.md
+- `embedded` -> `domains/embedded.md`
+- `driver` -> `domains/driver.md`
+- `desktop` -> `domains/desktop.md`
 
 If none match:
 
-* domain = other
-* load domains/generic.md (optional)
+- Set `domain = other`
+- `domains/generic.md` is optional fallback context
 
----
-
-## Step 5 — Scope Inference (Semantic)
+### Step 5 - Infer Scope Semantically
 
 Read:
 
-* core/scope-inference.md
+- `core/scope-inference.md`
 
 Rules:
 
-* scope = responsibility of change
-* NOT file name or folder
-* path is weak hint only
+- Scope reflects the responsibility of the change
+- Scope is NOT just a file name or folder
+- Path is a weak hint only
 
----
-
-## Step 5.5 — Apply Repo Memory (If Exists)
+### Step 5.5 - Apply Repo Memory (If Present)
 
 Read:
 
-* memory/commit-style.md
+- `memory/commit-style.md`
 
 Rules:
 
-* prefer repo-defined scopes
-* map semantic scope → repo scope
-* memory overrides generic inference
+- Prefer repo-defined scopes
+- Map semantic scope to repository scope
+- Repo memory overrides generic inference
 
----
+### Step 6 - Infer Type
 
-## Step 6 — Type Inference
+Use this priority:
 
-Priority:
+`fix > sec > perf > feat > refactor > test > docs > chore`
 
-fix > sec > perf > feat > refactor > test > docs > chore
+### Step 7 - Generate Commit
 
----
+Rules:
 
-## Step 7 — Generate Commit
+- Follow the strict format
+- Explain WHY, not just what changed
+- Avoid vague wording
 
-* follow strict format
-* explain WHY
-* avoid vague wording
+### Step 8 - Score and Improve
 
----
+- Score the result from `0-100`
+- If score is below `75`, rewrite it
+- Retry at most `2` times
 
-## Step 8 — Score & Improve
+### Step 9 - Final Confidence Gate
 
-* score (0–100)
-* if < 75 → rewrite (max 2 times)
+If ANY of the following are true:
 
----
+- Domain confidence is below `0.5`
+- Scope is unclear
+- Multiple reasonable interpretations remain
 
-## Step 9 — Final Confidence Gate
+Then:
 
-If ANY:
+- DO NOT finalize
+- ASK
 
-* domain confidence < 0.5
-* scope unclear
-* multiple interpretations exist
-
-→ DO NOT finalize
-→ ASK
-
----
-
-# Domain Guard
+## Domain Guard
 
 If domain is known:
 
-→ enforce domain scope constraints
+- Enforce domain-specific scope constraints
 
-If domain = other:
+If `domain = other`:
 
-→ allow generic scopes
-→ prioritize clarity and responsibility
+- Allow generic scopes
+- Prioritize clarity and responsibility over forced specificity
 
----
+## ASK Mode
 
-# ASK Mode (Low-Friction)
+### Trigger
 
-## Trigger
+Enter ASK mode when:
 
-* low confidence
-* ambiguity affecting type/scope/domain
+- Confidence is low
+- Ambiguity affects the likely domain, scope, or type
 
----
+### Rules
 
-## Rules
+- Ask at most `2` questions
+- Every question must affect the decision
+- Prefer multiple-choice questions
+- Avoid open-ended questions when a bounded choice will do
 
-* ask max 2 questions
-* must affect decision
-* prefer multiple choice
-* avoid open-ended questions
+### Question Format
 
----
-
-## Question Format
-
+```text
 Question: <clear question>
 
 Options:
 A. ...
 B. ...
 C. ...
+```
 
----
+### Example
 
-## Example
-
+```text
 Question:
 What type of system does this change belong to?
 
@@ -185,90 +162,83 @@ A. Firmware / hardware control
 B. OS-level driver
 C. Application / service
 D. Other
+```
 
----
+### Output (ASK)
 
-## Output (ASK)
-
+```yaml
 decision: ask
 
 questions:
+  - question: ...
+    options:
+      A: ...
+      B: ...
+      C: ...
+```
 
-* question: ...
-  options:
-  A: ...
-  B: ...
-  C: ...
+## Memory Suggestion (Optional)
 
----
+Trigger only if:
 
-# Memory Suggestion (Optional)
+- The same pattern appears at least `3` times
+- The user consistently overrides the inferred result
 
-Trigger if:
+### Output
 
-* pattern appears ≥ 3 times
-* user overrides consistently
-
----
-
-## Output
-
+```yaml
 memory_suggestion:
-reason: ...
-proposed_update:
-mappings:
-- from: ...
-to: ...
-confidence: 0.0–1.0
+  reason: ...
+  proposed_update:
+    mappings:
+      - from: ...
+        to: ...
+        confidence: 0.0-1.0
+```
 
----
+## Memory Apply Mode (Controlled)
 
-# Memory Apply Mode (Controlled)
+Apply memory ONLY if the user explicitly says:
 
-Apply ONLY if user explicitly says:
+`APPROVE MEMORY UPDATE`
 
-"APPROVE MEMORY UPDATE"
+### Rules
 
----
+- Modify `memory/commit-style.md` only
+- Keep the diff minimal
+- Do not do a full rewrite
+- Preserve the existing structure
 
-## Rules
+### Output
 
-* modify memory/commit-style.md only
-* minimal diff
-* no full rewrite
-* preserve structure
-
----
-
-## Output
-
+```yaml
 memory_update_applied: true
 
 updated_sections:
+  - ...
+```
 
-* ...
+## Output Format (MANDATORY)
 
----
-
-# Output Format (MANDATORY)
-
-commit_message: | <type>(<scope>): <summary>
+```yaml
+commit_message: |
+  <type>(<scope>): <summary>
 
   <why>
 
-* change 1
-* change 2
+  * change 1
+  * change 2
 
 type: <type>
 scope: <scope>
 
 domain: <embedded | driver | desktop | other>
-confidence: <0.0–1.0>
+confidence: <0.0-1.0>
 
 score: <0-100>
 
 issues:
-
-* <if any>
+  - <if any>
 
 decision: accept | revise | ask
+```

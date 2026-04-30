@@ -12,7 +12,7 @@ When an AI coding agent (such as Antigravity / Codex) needs to write a commit me
 The skill enforces:
 - **Semantic precision** — explains *why* a change was made, not just what changed
 - **Domain-aware scoping** — scope reflects the responsibility of the change, not the file name or folder path
-- **Confidence gating** — commits are only finalized when domain and scope are clear; ambiguous cases trigger ASK mode
+- **Confidence gating** — commits are only finalized when domain and scope are clear; ambiguous cases trigger ASK mode instead of guessing
 - **Scoring and auto-rewrite** — each commit is scored 0–100; if the score is below 75 it is automatically rewritten (max 2 iterations)
 - **Conventional Commits format** — strict `type(scope): summary` with a `why` body and bullet-point change list
 
@@ -27,29 +27,31 @@ It works across all domains — embedded firmware, OS drivers, desktop applicati
 
 ## How It Works
 
-The skill follows a strict 9-step execution pipeline:
+The skill follows a strict execution pipeline:
 
 ```
-Step 1  Load core rules (format, scoring, safety)
-Step 2  Infer domain from repository context and code characteristics
-Step 3  Estimate domain confidence (0.0–1.0)
-           ≥ 0.7 → proceed
-           0.4–0.7 → proceed with stated assumptions
-           < 0.4 → ASK
-Step 4  Load domain-specific rules (embedded / driver / desktop / generic)
-Step 5  Infer scope semantically (responsibility of change, NOT file name)
-Step 5.5 Apply repo memory if available (overrides generic inference)
-Step 6  Infer commit type (fix > sec > perf > feat > refactor > test > docs > chore)
-Step 7  Generate commit message
-Step 8  Score and rewrite if < 75 (max 2 rewrites)
-Step 9  Final confidence gate — if any ambiguity remains, ASK before finalizing
+Step 1    Load core rules (`format`, `scoring`, `safety`)
+Step 2    Infer domain from repository context and code characteristics
+Step 3    Estimate domain confidence (`0.0-1.0`)
+            `>= 0.7` -> proceed
+            `0.4-0.7` -> proceed with assumptions
+            `< 0.4` -> ASK
+Step 4    Load one matching domain rule (`embedded` / `driver` / `desktop`)
+            If none match, set `domain = other`
+            `domains/generic.md` remains optional fallback context
+Step 5    Infer scope semantically (responsibility of change, not file name)
+Step 5.5  Apply repo memory if available (overrides generic inference)
+Step 6    Infer commit type (`fix > sec > perf > feat > refactor > test > docs > chore`)
+Step 7    Generate the commit message
+Step 8    Score and rewrite if `< 75` (max `2` rewrites)
+Step 9    Final confidence gate — if ambiguity remains, ASK before finalizing
 ```
 
 ---
 
 ## Output Format
 
-Every commit message produced by this skill follows this mandatory format:
+Every commit message produced by this skill follows this mandatory output contract:
 
 ```
 <type>(<scope>): <summary>
@@ -67,10 +69,12 @@ Accompanied by metadata:
 type:       fix | feat | docs | refactor | perf | test | chore | sec
 scope:      <semantic responsibility, not file name>
 domain:     embedded | driver | desktop | other
-confidence: 0.0–1.0
+confidence: 0.0-1.0
 score:      0–100
 decision:   accept | revise | ask
 ```
+
+If confidence is too low, the skill does not finalize a guessed commit message. It enters ASK mode instead.
 
 ---
 
